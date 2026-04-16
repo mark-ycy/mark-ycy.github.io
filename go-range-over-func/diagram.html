@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Go Range Over Func 原理图</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Noto+Sans+SC:wght@300;400;700&display=swap');
+
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1f2937;
+    --gopher-teal: #00d2b5;
+    --go-blue: #00acd7;
+    --yield-orange: #f97316;
+    --break-red: #ef4444;
+    --continue-yellow: #eab308;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --border: #30363d;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Noto Sans SC', sans-serif;
+    min-height: 100vh;
+    padding: 40px 20px;
+    overflow-x: hidden;
+  }
+
+  h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: clamp(18px, 3vw, 28px);
+    text-align: center;
+    margin-bottom: 6px;
+    background: linear-gradient(90deg, var(--go-blue), var(--gopher-teal));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+  }
+
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 40px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .diagram-container {
+    max-width: 960px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  /* ===== TOP SECTION: CODE SIDE BY SIDE ===== */
+  .code-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .code-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .code-box.highlight-left { border-color: var(--go-blue); box-shadow: 0 0 20px rgba(0,172,215,0.15); }
+  .code-box.highlight-right { border-color: var(--gopher-teal); box-shadow: 0 0 20px rgba(0,210,181,0.15); }
+
+  .code-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot-red { background: var(--break-red); }
+  .dot-yellow { background: var(--continue-yellow); }
+  .dot-green { background: var(--gopher-teal); }
+
+  .code-label {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(0,172,215,0.1);
+    color: var(--go-blue);
+    border: 1px solid rgba(0,172,215,0.3);
+  }
+
+  pre {
+    padding: 16px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.8;
+    overflow-x: auto;
+  }
+
+  .kw { color: #ff7b72; }
+  .fn { color: #d2a8ff; }
+  .cm { color: var(--muted); font-style: italic; }
+  .str { color: #a5d6ff; }
+  .num { color: var(--yield-orange); }
+  .yield { color: var(--yield-orange); font-weight: 700; }
+  .type { color: var(--gopher-teal); }
+
+  /* ===== FLOW DIAGRAM ===== */
+  .flow-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+
+  .section-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title::before {
+    content: '';
+    display: inline-block;
+    width: 3px;
+    height: 14px;
+    background: var(--go-blue);
+    border-radius: 2px;
+  }
+
+  .flow-diagram {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: wrap;
+    position: relative;
+  }
+
+  .flow-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    min-width: 140px;
+  }
+
+  .flow-node {
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-align: center;
+    position: relative;
+    width: 100%;
+    max-width: 150px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .flow-node:hover { transform: translateY(-2px); }
+
+  .node-caller {
+    background: rgba(0,172,215,0.12);
+    border: 1.5px solid var(--go-blue);
+    color: var(--go-blue);
+  }
+  .node-iter {
+    background: rgba(0,210,181,0.12);
+    border: 1.5px solid var(--gopher-teal);
+    color: var(--gopher-teal);
+  }
+  .node-yield {
+    background: rgba(249,115,22,0.12);
+    border: 1.5px solid var(--yield-orange);
+    color: var(--yield-orange);
+  }
+  .node-decision {
+    background: rgba(234,179,8,0.1);
+    border: 1.5px dashed var(--continue-yellow);
+    color: var(--continue-yellow);
+    clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+    padding: 16px 10px;
+    aspect-ratio: 1.3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .node-break {
+    background: rgba(239,68,68,0.12);
+    border: 1.5px solid var(--break-red);
+    color: var(--break-red);
+  }
+  .node-done {
+    background: rgba(139,148,158,0.1);
+    border: 1.5px solid var(--muted);
+    color: var(--muted);
+    border-radius: 50px;
+  }
+
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    font-size: 18px;
+    color: var(--muted);
+    padding: 0 4px;
+    min-width: 40px;
+  }
+
+  .arrow-label {
+    font-size: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--muted);
+    white-space: nowrap;
+    margin-top: 2px;
+  }
+
+  /* ===== KEY MECHANICS ===== */
+  .mechanics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px;
+  }
+
+  .mechanic-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s, transform 0.2s;
+    cursor: default;
+  }
+  .mechanic-card:hover { transform: translateY(-2px); }
+  .mechanic-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+  }
+  .mc-yield::before { background: var(--yield-orange); border-color: var(--yield-orange); }
+  .mc-yield:hover { border-color: var(--yield-orange); }
+  .mc-break::before { background: var(--break-red); }
+  .mc-break:hover { border-color: var(--break-red); }
+  .mc-continue::before { background: var(--continue-yellow); }
+  .mc-continue:hover { border-color: var(--continue-yellow); }
+  .mc-pull::before { background: var(--go-blue); }
+  .mc-pull:hover { border-color: var(--go-blue); }
+
+  .mc-icon { font-size: 20px; margin-bottom: 8px; }
+  .mc-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .mc-desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .mc-code {
+    margin-top: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: var(--bg);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--text);
+  }
+
+  /* ===== CALL STACK VISUAL ===== */
+  .stack-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .stack-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  .stack-frame {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .frame-active {
+    border-color: var(--gopher-teal);
+    background: rgba(0,210,181,0.07);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(0,210,181,0.2); }
+    50% { box-shadow: 0 0 0 6px rgba(0,210,181,0); }
+  }
+
+  .frame-suspended {
+    border-color: var(--yield-orange);
+    background: rgba(249,115,22,0.07);
+  }
+
+  .frame-tag {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .tag-active { background: rgba(0,210,181,0.2); color: var(--gopher-teal); }
+  .tag-suspended { background: rgba(249,115,22,0.2); color: var(--yield-orange); }
+  .tag-waiting { background: rgba(139,148,158,0.2); color: var(--muted); }
+
+  .timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    position: relative;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 12px; top: 0; bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--go-blue), var(--gopher-teal), var(--yield-orange));
+    opacity: 0.4;
+  }
+
+  .tl-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 8px 0;
+    position: relative;
+  }
+  .tl-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+    margin-left: 9px;
+  }
+  .tl-content {
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .tl-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+  .tl-sub { color: var(--muted); font-size: 11px; }
+
+  /* Version badge */
+  .version-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0,172,215,0.1);
+    border: 1px solid rgba(0,172,215,0.3);
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--go-blue);
+    margin: 0 auto 32px;
+    display: block;
+    width: fit-content;
+  }
+
+  .separator {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
+    margin: 4px 0;
+  }
+
+  /* Responsive */
+  @media (max-width: 600px) {
+    .code-row, .stack-section { grid-template-columns: 1fr; }
+    .flow-diagram { gap: 0; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Go Range Over Func 原理图</h1>
+<p class="subtitle">// Go 1.23+ · GOEXPERIMENT=rangefunc (1.22) · Iter Protocol</p>
+<span class="version-badge">✦ Go 1.23 正式特性 · iter.Seq[V] / iter.Seq2[K,V]</span>
+
+<div class="diagram-container">
+
+  <!-- CODE ROW -->
+  <div class="code-row">
+    <!-- Iterator Function -->
+    <div class="code-box highlight-left">
+      <div class="code-header">
+        <div class="dot dot-red"></div><div class="dot dot-yellow"></div><div class="dot dot-green"></div>
+        <span>iterator.go</span>
+        <span class="code-label">Iterator 函数</span>
+      </div>
+      <pre><span class="cm">// iter.Seq[V] 类型定义</span>
+<span class="kw">type</span> <span class="type">Seq</span>[V <span class="kw">any</span>] <span class="kw">func</span>(
+    yield <span class="kw">func</span>(V) <span class="kw">bool</span>,
+)
+
+<span class="cm">// 自定义迭代器</span>
+<span class="kw">func</span> <span class="fn">IntsTo</span>(n <span class="kw">int</span>) <span class="type">iter.Seq</span>[<span class="kw">int</span>] {
+    <span class="kw">return func</span>(yield <span class="kw">func</span>(<span class="kw">int</span>) <span class="kw">bool</span>) {
+        <span class="kw">for</span> i := <span class="num">0</span>; i < n; i++ {
+            <span class="cm">// 调用 yield 传递值</span>
+            <span class="kw">if</span> !<span class="yield">yield</span>(i) {
+                <span class="kw">return</span> <span class="cm">// break 信号</span>
+            }
+        }
+    }
+}</pre>
+    </div>
+    <!-- Caller -->
+    <div class="code-box highlight-right">
+      <div class="code-header">
+        <div class="dot dot-red"></div><div class="dot dot-yellow"></div><div class="dot dot-green"></div>
+        <span>main.go</span>
+        <span class="code-label">调用方</span>
+      </div>
+      <pre><span class="cm">// range 遍历 iterator</span>
+<span class="kw">for</span> v := <span class="kw">range</span> <span class="fn">IntsTo</span>(<span class="num">5</span>) {
+    fmt.<span class="fn">Println</span>(v)
+}
+
+<span class="cm">// 等价展开（编译器做的事）</span>
+<span class="fn">IntsTo</span>(<span class="num">5</span>)(<span class="kw">func</span>(v <span class="kw">int</span>) <span class="kw">bool</span> {
+    fmt.<span class="fn">Println</span>(v)
+    <span class="kw">return true</span> <span class="cm">// continue</span>
+})
+
+<span class="cm">// break → yield 返回 false</span>
+<span class="kw">for</span> v := <span class="kw">range</span> <span class="fn">IntsTo</span>(<span class="num">100</span>) {
+    <span class="kw">if</span> v > <span class="num">3</span> { <span class="kw">break</span> }
+    fmt.<span class="fn">Println</span>(v)
+}</pre>
+    </div>
+  </div>
+
+  <!-- FLOW DIAGRAM -->
+  <div class="flow-section">
+    <div class="section-title">执行流程</div>
+    <div class="flow-diagram">
+
+      <!-- Col 1: range caller -->
+      <div class="flow-col">
+        <div class="flow-node node-caller">📞 range 语句<br><small>调用 Iterator()</small></div>
+        <div style="color:var(--muted);font-size:18px;">↓</div>
+        <div class="flow-node node-caller">🔧 编译器生成<br><small>yield 闭包</small></div>
+        <div style="color:var(--muted);font-size:18px;">↓</div>
+        <div class="flow-node node-yield" style="background:rgba(0,172,215,0.1);border-color:var(--go-blue);color:var(--go-blue);">✉️ 传入 yield<br><small>作为参数</small></div>
+        <div style="color:var(--muted);font-size:18px;">↓</div>
+        <div class="flow-node node-done">⏸ 等待 yield<br><small>被调用</small></div>
+      </div>
+
+      <!-- Arrow -->
+      <div class="flow-arrow">
+        <div style="font-size:22px; color: var(--go-blue);">⇄</div>
+        <div class="arrow-label" style="color:var(--go-blue);">协作控制</div>
+      </div>
+
+      <!-- Col 2: iterator body -->
+      <div class="flow-col">
+        <div class="flow-node node-iter">🔄 Iterator 函数<br><small>开始执行</small></div>
+        <div style="color:var(--muted);font-size:18px;">↓</div>
+        <div class="flow-node node-iter">📦 生成下一个值<br><small>i++, next()...</small></div>
+        <div style="color:var(--muted);font-size:18px;">↓</div>
+        <div class="flow-node node-yield">⚡ 调用 yield(v)<br><small>传递值给 range</small></div>
+        <div style="color:var(--muted);font-size:18px;">↓</div>
+        <div class="flow-node node-decision" style="max-width:120px; font-size:10px;">yield<br>返回?</div>
+      </div>
+
+      <!-- Arrow 2 -->
+      <div class="flow-arrow">
+        <div style="font-size:14px; color: var(--continue-yellow); display:flex; flex-direction:column; gap:20px; margin-top:140px;">
+          <div style="text-align:center">
+            <div style="color:var(--gopher-teal);">true ↓</div>
+            <div style="font-size:10px;color:var(--muted)">continue</div>
+          </div>
+          <div style="text-align:center">
+            <div style="color:var(--break-red);">false ↓</div>
+            <div style="font-size:10px;color:var(--muted)">break</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Col 3: outcomes -->
+      <div class="flow-col" style="margin-top: 120px;">
+        <div class="flow-node node-iter" style="margin-bottom:20px;">↩ 继续循环<br><small>生成下一个值</small></div>
+        <div class="flow-node node-break" style="margin-top:10px;">🛑 return 返回<br><small>清理并退出</small></div>
+        <div style="color:var(--muted);font-size:16px; margin-top:8px;">↓</div>
+        <div class="flow-node node-done">✅ 循环结束</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- MECHANICS CARDS -->
+  <div class="mechanics-grid">
+    <div class="mechanic-card mc-yield">
+      <div class="mc-icon">⚡</div>
+      <div class="mc-title" style="color:var(--yield-orange);">yield 机制</div>
+      <div class="mc-desc">Iterator 通过调用 yield(v) 向 range 循环体传递值。yield 是一个普通函数，<strong>不是协程</strong>，运行在同一 goroutine。</div>
+      <div class="mc-code"><span class="yield">yield</span>(v) → <span class="kw">bool</span></div>
+    </div>
+    <div class="mechanic-card mc-break">
+      <div class="mc-icon">🛑</div>
+      <div class="mc-title" style="color:var(--break-red);">break / return</div>
+      <div class="mc-desc">当循环体执行 <code>break</code> 或 <code>return</code>，编译器生成的 yield 函数返回 <code>false</code>，Iterator 收到信号后应停止并 return。</div>
+      <div class="mc-code">yield(v) == <span style="color:var(--break-red)">false</span> → return</div>
+    </div>
+    <div class="mechanic-card mc-continue">
+      <div class="mc-icon">🔁</div>
+      <div class="mc-title" style="color:var(--continue-yellow);">continue</div>
+      <div class="mc-desc">循环体执行 <code>continue</code> 时，yield 返回 <code>true</code>，Iterator 继续执行，生成下一个值并再次调用 yield。</div>
+      <div class="mc-code">yield(v) == <span style="color:var(--gopher-teal)">true</span> → 继续</div>
+    </div>
+    <div class="mechanic-card mc-pull">
+      <div class="mc-icon">🔃</div>
+      <div class="mc-title" style="color:var(--go-blue);">Pull vs Push 模型</div>
+      <div class="mc-desc">Range-over-func 是 <strong>Push 模型</strong>：Iterator 主动推送值。<code>iter.Pull()</code> 可转换为 Pull 模型，使用 next() 按需拉取。</div>
+      <div class="mc-code">next, stop := iter.<span class="fn">Pull</span>(seq)</div>
+    </div>
+  </div>
+
+  <!-- STACK + TIMELINE -->
+  <div class="stack-section">
+    <!-- Call Stack -->
+    <div class="stack-box">
+      <div class="section-title">调用栈状态（yield 执行中）</div>
+      <div class="stack-frame frame-active">
+        <span>循环体 (body)</span>
+        <span class="frame-tag tag-active">▶ 执行中</span>
+      </div>
+      <div style="text-align:center;color:var(--muted);font-size:12px;padding:2px 0;">← yield() 调用进入</div>
+      <div class="stack-frame frame-suspended">
+        <span>yield 函数</span>
+        <span class="frame-tag tag-suspended">⏸ 传递控制</span>
+      </div>
+      <div class="stack-frame" style="border-color:var(--yield-orange); background:rgba(249,115,22,0.05);">
+        <span>Iterator 函数体</span>
+        <span class="frame-tag tag-suspended">⏸ 等待 yield 返回</span>
+      </div>
+      <div class="stack-frame">
+        <span>range 语句</span>
+        <span class="frame-tag tag-waiting">⌛ 等待</span>
+      </div>
+      <div class="stack-frame">
+        <span>main()</span>
+        <span class="frame-tag tag-waiting">⌛</span>
+      </div>
+      <div class="separator" style="margin-top:8px;"></div>
+      <div style="font-size:11px; color:var(--muted); margin-top:8px; font-family:'JetBrains Mono',monospace;">
+        ⚠ 同一 goroutine · 无 channel · 无调度开销
+      </div>
+    </div>
+
+    <!-- Execution Timeline -->
+    <div class="stack-box">
+      <div class="section-title">执行时序</div>
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="tl-dot" style="background:var(--go-blue);"></div>
+          <div class="tl-content">
+            <div class="tl-label" style="color:var(--go-blue);">① range 调用 Iterator</div>
+            <div class="tl-sub">传入编译器生成的 yield 闭包</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot" style="background:var(--gopher-teal);"></div>
+          <div class="tl-content">
+            <div class="tl-label" style="color:var(--gopher-teal);">② Iterator 产生第一个值</div>
+            <div class="tl-sub">执行循环/递归，计算 v</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot" style="background:var(--yield-orange);"></div>
+          <div class="tl-content">
+            <div class="tl-label" style="color:var(--yield-orange);">③ 调用 yield(v)</div>
+            <div class="tl-sub">控制权转移到循环体</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot" style="background:var(--gopher-teal);"></div>
+          <div class="tl-content">
+            <div class="tl-label" style="color:var(--gopher-teal);">④ 循环体执行</div>
+            <div class="tl-sub">处理 v，决定 continue/break</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot" style="background:var(--yield-orange);"></div>
+          <div class="tl-content">
+            <div class="tl-label" style="color:var(--yield-orange);">⑤ yield 返回 bool</div>
+            <div class="tl-sub">true=继续，false=停止</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot" style="background:var(--go-blue);"></div>
+          <div class="tl-content">
+            <div class="tl-label" style="color:var(--go-blue);">⑥ Iterator 检查返回值</div>
+            <div class="tl-sub">true→生成下一个，false→return</div>
+          </div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot" style="background:var(--muted);"></div>
+          <div class="tl-content">
+            <div class="tl-label" style="color:var(--muted);">⑦ 重复 ②~⑥ 直到结束</div>
+            <div class="tl-sub">Iterator return → range 完成</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ITER.PULL SECTION -->
+  <div class="code-box" style="border-color: rgba(0,210,181,0.4);">
+    <div class="code-header">
+      <div class="dot dot-red"></div><div class="dot dot-yellow"></div><div class="dot dot-green"></div>
+      <span>pull_model.go</span>
+      <span class="code-label" style="color:var(--gopher-teal);background:rgba(0,210,181,0.1);border-color:rgba(0,210,181,0.3)">iter.Pull — Push 转 Pull</span>
+    </div>
+    <pre><span class="cm">// iter.Pull 将 Push 模式转换为 Pull 模式（内部使用 goroutine + channel 或 coro）</span>
+next, stop := iter.<span class="fn">Pull</span>(<span class="fn">IntsTo</span>(<span class="num">10</span>))
+<span class="kw">defer</span> <span class="fn">stop</span>()          <span class="cm">// 必须调用！防止 Iterator goroutine 泄漏</span>
+
+<span class="kw">for</span> {
+    v, ok := <span class="fn">next</span>()   <span class="cm">// 主动拉取下一个值</span>
+    <span class="kw">if</span> !ok { <span class="kw">break</span> }  <span class="cm">// 迭代结束</span>
+    fmt.<span class="fn">Println</span>(v)
+}
+
+<span class="cm">// iter.Pull2 适用于 Seq2[K, V] (类似 map 的 key-value 迭代器)</span>
+next2, stop2 := iter.<span class="fn">Pull2</span>(<span class="fn">MapIter</span>(m))
+<span class="kw">defer</span> <span class="fn">stop2</span>()</pre>
+  </div>
+
+</div>
+
+<script>
+  // Animate flow nodes on click
+  document.querySelectorAll('.flow-node').forEach(node => {
+    node.addEventListener('click', () => {
+      node.style.transform = 'scale(0.95)';
+      setTimeout(() => node.style.transform = '', 200);
+    });
+  });
+
+  // Subtle entrance animation
+  const cards = document.querySelectorAll('.mechanic-card, .stack-box, .flow-section, .code-box');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((e, i) => {
+      if (e.isIntersecting) {
+        setTimeout(() => {
+          e.target.style.opacity = '1';
+          e.target.style.transform = 'translateY(0)';
+        }, i * 60);
+        observer.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.1 });
+
+  cards.forEach(c => {
+    c.style.opacity = '0';
+    c.style.transform = 'translateY(16px)';
+    c.style.transition = 'opacity 0.4s ease, transform 0.4s ease';
+    observer.observe(c);
+  });
+</script>
+</body>
+</html>
